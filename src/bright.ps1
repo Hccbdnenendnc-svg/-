@@ -20,7 +20,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [ValidateSet('get', 'set', 'inc', 'dec', 'list', '')]
+    [ValidateSet('get', 'set', 'inc', 'dec', 'list', 'dim', 'undim', '')]
     [string]$Action = '',
 
     [Parameter(Position = 1)]
@@ -72,6 +72,75 @@ namespace DDCBrightness
 
         [DllImport("dxva2.dll")]
         public static extern bool DestroyPhysicalMonitor(IntPtr hMonitor);
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct RAMP
+        {
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public ushort[] Red;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public ushort[] Green;
+            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
+            public ushort[] Blue;
+        }
+
+        [DllImport("gdi32.dll", CharSet = CharSet.Auto)]
+        public static extern IntPtr CreateDC(string lpszDriver, string lpszDevice, string lpszOutput, IntPtr devMode);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool DeleteDC(IntPtr hdc);
+
+        [DllImport("gdi32.dll")]
+        public static extern bool SetDeviceGammaRamp(IntPtr hdc, ref RAMP ramp);
+
+        [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+        public static extern bool EnumDisplayDevices(string lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+        public struct DISPLAY_DEVICE
+        {
+            public int cb;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+            public string DeviceName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string DeviceString;
+            public int StateFlags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string DeviceID;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
+            public string DeviceKey;
+        }
+
+        public static bool ApplyGammaFactor(double factor)
+        {
+            var ramp = new RAMP();
+            ramp.Red = new ushort[256];
+            ramp.Green = new ushort[256];
+            ramp.Blue = new ushort[256];
+            for (int i = 0; i < 256; i++)
+            {
+                ushort v = (ushort)Math.Min(65535.0, Math.Round(65535.0 * factor * i / 255.0));
+                ramp.Red[i] = v;
+                ramp.Green[i] = v;
+                ramp.Blue[i] = v;
+            }
+
+            bool ok = false;
+            var adapter = new DISPLAY_DEVICE();
+            adapter.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+            for (uint i = 0; EnumDisplayDevices(null, i, ref adapter, 0); i++)
+            {
+                if ((adapter.StateFlags & 1) == 0) continue; // not attached to desktop
+                IntPtr hdc = CreateDC("DISPLAY", adapter.DeviceName, null, IntPtr.Zero);
+                if (hdc != IntPtr.Zero)
+                {
+                    if (SetDeviceGammaRamp(hdc, ref ramp)) ok = true;
+                    DeleteDC(hdc);
+                }
+                adapter.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
+            }
+            return ok;
+        }
 
         public static List<PHYSICAL_MONITOR> Enumerate()
         {
@@ -177,6 +246,27 @@ if ($Action -eq '' -or $Action -eq 'get') {
         else {
             Write-Host ("[{0}] {1}: not supported (enable DDC/CI in the monitor OSD menu)" -f $m.Index, $m.Name) -ForegroundColor Yellow
         }
+    }
+    exit 0
+}
+
+# ---- action: dim / undim (software dimming, works with HDR on) ----
+if ($Action -eq 'dim' -or $Action -eq 'undim') {
+    if ($Action -eq 'undim') {
+        $factor = 1.0
+    }
+    else {
+        if ($Value -lt 1 -or $Value -gt 100) { $Value = 50 }
+        # gamma ramp is clamped by the graphics driver for safety; anything
+        # below ~50% gets rejected (tested), so keep the floor at 50%
+        $factor = [math]::Max(0.5, [math]::Min(1.0, $Value / 100.0))
+    }
+    $ok = [DDCBrightness.MonitorApi]::ApplyGammaFactor($factor)
+    if ($ok) {
+        Write-Host ("Software dimming applied: {0}%" -f [math]::Round($factor * 100)) -ForegroundColor Green
+    }
+    else {
+        Write-Host 'Failed to apply gamma ramp (driver refused).' -ForegroundColor Red
     }
     exit 0
 }
