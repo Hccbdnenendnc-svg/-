@@ -29,6 +29,7 @@ if (-not $mutex.WaitOne(0)) {
 # ---- state ----------------------------------------------------------------
 $stateDir  = Join-Path $env:LOCALAPPDATA 'BrightnessDDC'
 $stateFile = Join-Path $stateDir 'state.json'
+$nightFile = Join-Path $stateDir 'night.json'
 New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 
 function Save-State([int]$Pct) {
@@ -43,6 +44,44 @@ function Load-State {
     } catch { }
     return 50
 }
+
+# ---- night mode -----------------------------------------------------------
+$script:night = @{ enabled = $false; start = '22:00'; end = '07:00'; dayPct = 70; nightPct = 35; lastPeriod = '' }
+
+function Load-NightConfig {
+    try {
+        if (Test-Path $nightFile) {
+            $j = Get-Content $nightFile -Raw | ConvertFrom-Json
+            foreach ($k in 'enabled', 'start', 'end', 'dayPct', 'nightPct') {
+                if ($null -ne $j.$k) { $script:night[$k] = $j.$k }
+            }
+        }
+    } catch { }
+}
+function Save-NightConfig {
+    try {
+        @{ enabled = $script:night.enabled; start = $script:night.start; end = $script:night.end;
+           dayPct = $script:night.dayPct; nightPct = $script:night.nightPct } |
+            ConvertTo-Json -Compress | Out-File -FilePath $nightFile -Encoding ascii -Force
+    } catch { }
+}
+function Test-IsNight([TimeSpan]$Now = [DateTime]::Now.TimeOfDay) {
+    $s = [TimeSpan]::Parse($script:night.start)
+    $e = [TimeSpan]::Parse($script:night.end)
+    if ($s -gt $e) { return ($Now -ge $s -or $Now -lt $e) }  # overnight wrap
+    return ($Now -ge $s -and $Now -lt $e)
+}
+function Apply-NightSchedule {
+    # Only acts when the day/night period changes; manual adjustments in between are kept.
+    if (-not $script:night.enabled) { $script:night.lastPeriod = ''; return }
+    $period = if (Test-IsNight) { 'night' } else { 'day' }
+    if ($script:night.lastPeriod -ne $period) {
+        $script:night.lastPeriod = $period
+        $pct = if ($period -eq 'night') { [int]$script:night.nightPct } else { [int]$script:night.dayPct }
+        Set-BrightnessPct $pct
+    }
+}
+Load-NightConfig
 
 # ---- monitor state --------------------------------------------------------
 $script:mon = $null
@@ -193,6 +232,18 @@ foreach ($p in 25, 50, 75, 100) {
 
 $menu.Items.Add('-') | Out-Null
 
+$nightItem = New-Object System.Windows.Forms.ToolStripMenuItem
+$nightItem.CheckOnClick = $true
+$nightItem.Checked = [bool]$script:night.enabled
+$nightItem.Add_Click({
+    $script:night.enabled = [bool]$nightItem.Checked
+    Save-NightConfig
+    if ($nightItem.Checked) { $script:night.lastPeriod = ''; Apply-NightSchedule }
+}.GetNewClosure())
+$menu.Items.Add($nightItem) | Out-Null
+
+$menu.Items.Add('-') | Out-Null
+
 $refreshItem = New-Object System.Windows.Forms.ToolStripMenuItem 'Rescan monitors'
 $refreshItem.Add_Click({ Refresh-Monitors; Update-Icon }.GetNewClosure())
 $menu.Items.Add($refreshItem) | Out-Null
@@ -212,6 +263,13 @@ $notify.ContextMenuStrip = $menu
 # clicking the trackbar host shouldn't close the menu prematurely
 $menu.AutoClose = $true
 
+function Update-NightMenuText {
+    $mark = if ($script:night.enabled) { 'on' } else { 'off' }
+    $nightItem.Text = "Night mode ($mark) $($script:night.start)-$($script:night.end)  day:$($script:night.dayPct)% night:$($script:night.nightPct)%"
+}
+$menu.Add_Opening({ Update-NightMenuText }.GetNewClosure())
+Update-NightMenuText
+
 # ---- timers ---------------------------------------------------------------
 # apply saved brightness shortly after start (skip gamma flash: DDC only)
 $script:currentPct = Load-State
@@ -220,6 +278,11 @@ $startTimer.Interval = 3000
 $startTimer.Add_Tick({
     $startTimer.Stop()
     Refresh-Monitors
+    if ($script:night.enabled) {
+        $period = if (Test-IsNight) { 'night' } else { 'day' }
+        $script:night.lastPeriod = $period
+        $script:currentPct = if ($period -eq 'night') { [int]$script:night.nightPct } else { [int]$script:night.dayPct }
+    }
     if (Test-DDCAvailable) { Set-BrightnessPct $script:currentPct }
     else { Update-Icon }
 }.GetNewClosure())
@@ -230,6 +293,7 @@ $pollTimer = New-Object System.Windows.Forms.Timer
 $pollTimer.Interval = 60000
 $pollTimer.Add_Tick({
     Refresh-Monitors
+    Apply-NightSchedule
     Update-Icon
 }.GetNewClosure())
 $pollTimer.Start()

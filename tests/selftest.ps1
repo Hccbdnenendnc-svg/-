@@ -85,7 +85,26 @@ catch {
 }
 Remove-Item $stateFile -Force -Confirm:$false -ErrorAction SilentlyContinue
 
-# ---- 7. gamma pipeline ----
+# ---- 7. night schedule logic (extracted from bright_tray.ps1) ----
+try {
+    $traySrc = Get-Content (Join-Path $src 'bright_tray.ps1') -Raw
+    $m = [regex]::Match($traySrc, '(?s)function Test-IsNight.*?\r?\n}')
+    if (-not $m.Success) { throw 'Test-IsNight not found' }
+    Invoke-Expression $m.Value
+    $script:night = @{ start = '22:00'; end = '07:00' }
+    Check 'Night: 23:00 is night' ([bool](Test-IsNight ([TimeSpan]::Parse('23:00'))))
+    Check 'Night: 02:00 is night (overnight wrap)' ([bool](Test-IsNight ([TimeSpan]::Parse('02:00'))))
+    Check 'Night: 12:00 is day' (-not [bool](Test-IsNight ([TimeSpan]::Parse('12:00'))))
+    Check 'Night: 08:00 is day' (-not [bool](Test-IsNight ([TimeSpan]::Parse('08:00'))))
+    $script:night = @{ start = '10:00'; end = '18:00' }
+    Check 'Day-window: 12:00 inside' ([bool](Test-IsNight ([TimeSpan]::Parse('12:00'))))
+    Check 'Day-window: 20:00 outside' (-not [bool](Test-IsNight ([TimeSpan]::Parse('20:00'))))
+}
+catch {
+    Check 'Night schedule logic' $false $_.Exception.Message
+}
+
+# ---- 8. gamma pipeline ----
 try {
     $ok = Set-GammaFactor 1.0
     Check 'Gamma identity (no visible change)' $ok
