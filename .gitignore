@@ -1,0 +1,8 @@
+# Windows junk
+Thumbs.db
+Desktop.ini
+
+# VS/PS
+*.user
+*.suo
+.vs/
