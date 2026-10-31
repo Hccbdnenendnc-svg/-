@@ -112,6 +112,14 @@ bright undim     恢复正常
 
 日常建议：桌面工作用 SDR + `bright`（真亮度、无损画质）；看 HDR 片子/玩 HDR 游戏时才开 HDR，桌面亮度交给"SDR 内容亮度"滑块。
 
+## 自测
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tests\selftest.ps1
+```
+
+验证共享 API、百分比换算、状态持久化、伽马通道、托盘应用生命周期（启动存活、单实例互斥、干净退出）。`-SkipGamma` 跳过会短暂改变屏幕亮度的伽马测试。
+
 ## 故障排查
 
 - **托盘图标不显示**：任务栏设置 → 打开"系统托盘图标"显示；或直接跑 `bright_tray.cmd` 看 PowerShell 报错。
