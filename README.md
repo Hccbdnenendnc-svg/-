@@ -8,14 +8,17 @@
 
 - 读取/设置/增减一台或多台显示器的物理亮度
 - `bright.cmd` 包装器，支持 `bright 40`、`bright +10`、`bright -10` 这种直觉用法
-- 可选的 AutoHotkey v2 热键脚本：`Ctrl+Alt+↑/↓` 调亮度，`Ctrl+Alt+0~9` 直接跳到 0%~90%，体验和笔记本 Fn 键一致
-- 一键安装脚本：把 `bright` 命令注册进用户 PATH
+- **系统托盘应用 `bright_tray`**：任务栏太阳图标 + 右键滑块 + 预设档位，内置全局热键 `Ctrl+Alt+↑/↓` 和 `Ctrl+Alt+0~9`，零依赖（不需要 AutoHotkey）
+- 托盘应用记忆上次亮度，开机自动恢复
+- 无 DDC/CI 时（HDR 开启、笔记本内屏）自动降级为伽马调暗
+- 一键安装脚本：`bright` 命令进 PATH + 托盘应用开机自启
+- 可选的 AutoHotkey v2 热键脚本（给不需要常驻进程的极简主义者）
 
 ## 环境要求
 
 - Windows 10 / 11
 - 显示器支持 DDC/CI（绝大多数 2010 年后的台式机显示器都支持，部分需要在 OSD 菜单里手动开启）
-- 热键功能需要 [AutoHotkey v2](https://www.autohotkey.com)
+- 无其他依赖；托盘应用和热键均内置，不需要 AutoHotkey（AHK 脚本仅作为可选替代）
 
 ## 安装
 
@@ -25,7 +28,7 @@ cd desktop-brightness
 .\install.ps1
 ```
 
-`install.ps1` 会把 `bright` 命令复制到 `%LOCALAPPDATA%\BrightnessDDC\bin` 并加入用户 PATH，开个新终端即可使用。脚本还会询问是否开机自启热键。
+`install.ps1` 会把 `bright` 命令复制到 `%LOCALAPPDATA%\BrightnessDDC\bin` 并加入用户 PATH，开个新终端即可使用。脚本还会询问是否把托盘应用设为开机自启。
 
 不想安装的话，直接跑 `src\bright.ps1` 也行。
 
@@ -39,11 +42,25 @@ bright -10          所有显示器减 10
 bright set 40 2     只把 2 号显示器设为 40%
 bright get 2        查看 2 号显示器亮度
 bright list         列出检测到的显示器
+bright dim 60       软件调暗到 60%（HDR 下可用）
+bright undim        恢复正常
 ```
 
 在「运行」对话框（Win+R）里输入 `bright 30` 也能用，前提是装过了。
 
-### 热键（可选）
+## 托盘应用（推荐）
+
+```powershell
+# 直接跑
+powershell -WindowStyle Hidden -ExecutionPolicy Bypass -File src\bright_tray.ps1
+# 或双击
+src\bright_tray.cmd
+```
+
+启动后任务栏出现一个太阳图标（颜色随亮度变化，悬停显示当前百分比）：
+
+- **右键图标**：滑块直接拖动亮度、±10、25/50/75/100 预设、重新扫描显示器、退出
+- **全局热键**（托盘应用运行时生效，不依赖 AutoHotkey）：
 
 | 快捷键 | 功能 |
 |---|---|
@@ -51,7 +68,19 @@ bright list         列出检测到的显示器
 | `Ctrl+Alt+↓` | 亮度 −10 |
 | `Ctrl+Alt+0~9` | 亮度设为 0%~90% |
 
-需要 `bright_hotkeys.ahk` 与 AutoHotkey v2，`install.ps1` 可配置开机自启。
+- 开机自启记忆：自动恢复上次的亮度（仅 DDC 显示器，避免伽马闪烁）
+- 无 DDC/CI 显示器时自动改用伽马调暗（50%~100%），HDR 模式下也能用
+- 单实例保护：重复启动会直接退出，不会驻留多个进程
+
+### 热键（可选，AutoHotkey 方案）
+
+| 快捷键 | 功能 |
+|---|---|
+| `Ctrl+Alt+↑` | 亮度 +10 |
+| `Ctrl+Alt+↓` | 亮度 −10 |
+| `Ctrl+Alt+0~9` | 亮度设为 0%~90% |
+
+需要 `bright_hotkeys.ahk` 与 AutoHotkey v2。仅当你不想要常驻托盘进程时用它。
 
 ## 原理
 
@@ -85,6 +114,7 @@ bright undim     恢复正常
 
 ## 故障排查
 
+- **托盘图标不显示**：任务栏设置 → 打开"系统托盘图标"显示；或直接跑 `bright_tray.cmd` 看 PowerShell 报错。
 - **提示 no DDC/CI**：先进显示器 OSD 菜单找 "DDC/CI" 选项并开启；部分型号（尤其部分 LG / 三星）默认关闭。
 - **远程桌面 (RDP) 下无效**：RDP 会话里枚举到的是虚拟显示器，摸不到物理 DDC/CI 通道，请在本机控制台会话使用。
 - **核显驱动问题**：很老的集显驱动可能不支持该 API，更新显卡驱动即可。

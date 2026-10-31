@@ -1,6 +1,12 @@
 <#
 .SYNOPSIS
-    Installs the "bright" command so it works from anywhere (Win+R, terminal, Run dialog).
+    Installs the "bright" CLI and (optionally) the bright_tray tray app.
+
+.DESCRIPTION
+    - Copies bright.ps1 / bright.cmd / monitor_api.ps1 / bright_tray.* to
+      %LOCALAPPDATA%\BrightnessDDC\bin and adds it to the user PATH
+    - Optionally registers bright_tray (tray icon + slider + hotkeys) to
+      start at login - no AutoHotkey needed
 #>
 
 $ErrorActionPreference = 'Stop'
@@ -10,8 +16,9 @@ $destDir = Join-Path $env:LOCALAPPDATA 'BrightnessDDC'
 $binDir = Join-Path $destDir 'bin'
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-Copy-Item (Join-Path $src 'bright.ps1') $binDir -Force
-Copy-Item (Join-Path $src 'bright.cmd') $binDir -Force
+foreach ($f in 'monitor_api.ps1', 'bright.ps1', 'bright.cmd', 'bright_tray.ps1', 'bright_tray.cmd') {
+    Copy-Item (Join-Path $src $f) $binDir -Force
+}
 
 # add to user PATH if missing
 $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
@@ -21,24 +28,18 @@ if ($userPath -notlike "*$binDir*") {
     Write-Host "Open a NEW terminal window for the change to take effect." -ForegroundColor Yellow
 }
 
-# optional: register startup shortcut for hotkeys if AutoHotkey v2 exists
-$ahk = 'bright_hotkeys.ahk'
-$ahkSrc = Join-Path $src $ahk
-if (Test-Path $ahkSrc) {
-    Copy-Item $ahkSrc $destDir -Force
-    Write-Host ""
-    $ans = Read-Host "Install Ctrl+Alt+Up/Down brightness hotkeys at startup? (y/N)"
-    if ($ans -eq 'y') {
-        Copy-Item $ahkSrc $destDir -Force
-        $shell = New-Object -ComObject WScript.Shell
-        $startup = [Environment]::GetFolderPath('Startup')
-        $lnk = $shell.CreateShortcut((Join-Path $startup 'Brightness Hotkeys.lnk'))
-        $lnk.TargetPath = (Join-Path $destDir $ahk)
-        $lnk.WorkingDirectory = $destDir
-        $lnk.Save()
-        Write-Host "Hotkeys installed. They start after next login (AutoHotkey v2 required)." -ForegroundColor Green
-    }
+Write-Host ""
+$ans = Read-Host "Install the bright_tray tray app (icon + slider + Ctrl+Alt hotkeys) at startup? (Y/n)"
+if ($ans -ne 'n') {
+    $shell = New-Object -ComObject WScript.Shell
+    $startup = [Environment]::GetFolderPath('Startup')
+    $lnk = $shell.CreateShortcut((Join-Path $startup 'bright_tray.lnk'))
+    $lnk.TargetPath = (Join-Path $binDir 'bright_tray.cmd')
+    $lnk.WorkingDirectory = $binDir
+    $lnk.WindowStyle = 7  # minimized
+    $lnk.Save()
+    Write-Host "Tray app installed - starts at next login. To start it now:  $binDir\bright_tray.cmd" -ForegroundColor Green
 }
 
 Write-Host ""
-Write-Host "Done. Try:  bright   |   bright 40   |   bright +10   |   bright -10   |   bright list" -ForegroundColor Green
+Write-Host "Done. Try:  bright   |   bright 40   |   bright +10   |   bright list   |   bright dim 60" -ForegroundColor Green

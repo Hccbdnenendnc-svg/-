@@ -15,6 +15,8 @@
     bright.ps1 inc 10             # increase ALL monitors by 10
     bright.ps1 dec 10             # decrease ALL monitors by 10
     bright.ps1 list               # list detected monitors
+    bright.ps1 dim 60             # software-dim the screen to 60% (works with HDR)
+    bright.ps1 undim              # undo software dimming
 #>
 
 [CmdletBinding()]
@@ -31,179 +33,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-
-if (-not ('DDCBrightness.MonitorApi' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Collections.Generic;
-using System.Runtime.InteropServices;
-
-namespace DDCBrightness
-{
-    public class MonitorApi
-    {
-        public delegate bool MonitorEnumProc(IntPtr hMonitor, IntPtr hdcMonitor, ref RECT rect, IntPtr data);
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct RECT { public int Left, Top, Right, Bottom; }
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        public struct PHYSICAL_MONITOR
-        {
-            public IntPtr hPhysicalMonitor;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-            public string szPhysicalMonitorDescription;
-        }
-
-        [DllImport("user32.dll")]
-        public static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
-
-        [DllImport("dxva2.dll")]
-        public static extern bool GetNumberOfPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, ref uint count);
-
-        [DllImport("dxva2.dll")]
-        public static extern bool GetPhysicalMonitorsFromHMONITOR(IntPtr hMonitor, uint size, [Out] PHYSICAL_MONITOR[] monitors);
-
-        [DllImport("dxva2.dll")]
-        public static extern bool GetMonitorBrightness(IntPtr hMonitor, ref uint min, ref uint current, ref uint max);
-
-        [DllImport("dxva2.dll")]
-        public static extern bool SetMonitorBrightness(IntPtr hMonitor, uint newValue);
-
-        [DllImport("dxva2.dll")]
-        public static extern bool DestroyPhysicalMonitor(IntPtr hMonitor);
-
-        [StructLayout(LayoutKind.Sequential)]
-        public struct RAMP
-        {
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public ushort[] Red;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public ushort[] Green;
-            [MarshalAs(UnmanagedType.ByValArray, SizeConst = 256)]
-            public ushort[] Blue;
-        }
-
-        [DllImport("gdi32.dll", CharSet = CharSet.Auto)]
-        public static extern IntPtr CreateDC(string lpszDriver, string lpszDevice, string lpszOutput, IntPtr devMode);
-
-        [DllImport("gdi32.dll")]
-        public static extern bool DeleteDC(IntPtr hdc);
-
-        [DllImport("gdi32.dll")]
-        public static extern bool SetDeviceGammaRamp(IntPtr hdc, ref RAMP ramp);
-
-        [DllImport("user32.dll", CharSet = CharSet.Ansi)]
-        public static extern bool EnumDisplayDevices(string lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
-
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-        public struct DISPLAY_DEVICE
-        {
-            public int cb;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
-            public string DeviceName;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-            public string DeviceString;
-            public int StateFlags;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-            public string DeviceID;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)]
-            public string DeviceKey;
-        }
-
-        public static bool ApplyGammaFactor(double factor)
-        {
-            var ramp = new RAMP();
-            ramp.Red = new ushort[256];
-            ramp.Green = new ushort[256];
-            ramp.Blue = new ushort[256];
-            for (int i = 0; i < 256; i++)
-            {
-                ushort v = (ushort)Math.Min(65535.0, Math.Round(65535.0 * factor * i / 255.0));
-                ramp.Red[i] = v;
-                ramp.Green[i] = v;
-                ramp.Blue[i] = v;
-            }
-
-            bool ok = false;
-            var adapter = new DISPLAY_DEVICE();
-            adapter.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
-            for (uint i = 0; EnumDisplayDevices(null, i, ref adapter, 0); i++)
-            {
-                if ((adapter.StateFlags & 1) == 0) continue; // not attached to desktop
-                IntPtr hdc = CreateDC("DISPLAY", adapter.DeviceName, null, IntPtr.Zero);
-                if (hdc != IntPtr.Zero)
-                {
-                    if (SetDeviceGammaRamp(hdc, ref ramp)) ok = true;
-                    DeleteDC(hdc);
-                }
-                adapter.cb = Marshal.SizeOf(typeof(DISPLAY_DEVICE));
-            }
-            return ok;
-        }
-
-        public static List<PHYSICAL_MONITOR> Enumerate()
-        {
-            var hMonitors = new List<IntPtr>();
-            MonitorEnumProc proc = delegate(IntPtr hMon, IntPtr hdc, ref RECT rect, IntPtr data)
-            {
-                hMonitors.Add(hMon);
-                return true;
-            };
-            EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, proc, IntPtr.Zero);
-
-            var result = new List<PHYSICAL_MONITOR>();
-            foreach (var hMon in hMonitors)
-            {
-                uint count = 0;
-                if (!GetNumberOfPhysicalMonitorsFromHMONITOR(hMon, ref count)) continue;
-                if (count == 0) continue;
-
-                var arr = new PHYSICAL_MONITOR[count];
-                if (!GetPhysicalMonitorsFromHMONITOR(hMon, count, arr)) continue;
-                foreach (var item in arr)
-                {
-                    var m = item;
-                    if (m.szPhysicalMonitorDescription == null) m.szPhysicalMonitorDescription = "Unknown monitor";
-                    result.Add(m);
-                }
-            }
-            return result;
-        }
-    }
-}
-'@
-}
-
-function Get-Monitors {
-    $monitors = [DDCBrightness.MonitorApi]::Enumerate()
-    $list = @()
-    for ($i = 0; $i -lt $monitors.Count; $i++) {
-        $m = $monitors[$i]
-        $info = [ordered]@{
-            Index       = $i + 1
-            Handle      = $m.hPhysicalMonitor
-            Name        = $m.szPhysicalMonitorDescription
-            Supported   = $false
-            Current     = $null
-            Min         = $null
-            Max         = $null
-        }
-        $min = [uint32]0; $cur = [uint32]0; $max = [uint32]0
-        if ([DDCBrightness.MonitorApi]::GetMonitorBrightness($m.hPhysicalMonitor, [ref]$min, [ref]$cur, [ref]$max)) {
-            $info.Supported = $true
-            $info.Min = $min; $info.Current = $cur; $info.Max = $max
-        }
-        $list += [pscustomobject]$info
-    }
-    return $list
-}
-
-function Show-Pct($cur, $min, $max) {
-    if ($null -eq $cur) { return 'n/a' }
-    if ($max -le $min) { return "$cur" }
-    return '{0}%' -f [math]::Round(100 * ($cur - $min) / ($max - $min))
-}
+. (Join-Path $PSScriptRoot 'monitor_api.ps1')
 
 # ---- normalize arguments: allow "bright 40" / "bright +10" style calls ----
 if (-not $Action -and $args.Count -gt 0) {
@@ -214,87 +44,87 @@ if (-not $Action -and $args.Count -gt 0) {
 }
 
 try {
-    $monitors = Get-Monitors
+    $monitors = Get-DDCMonitors
 }
 catch {
     Write-Error "Failed to enumerate monitors: $_"
     exit 1
 }
 
-if ($monitors.Count -eq 0) {
+if ($monitors.Handles.Count -eq 0) {
     Write-Host 'No physical monitor found. This tool controls external monitors via DDC/CI only.' -ForegroundColor Yellow
     exit 1
 }
 
 # ---- action: list ----
 if ($Action -eq 'list') {
-    foreach ($m in $monitors) {
-        $ddc = if ($m.Supported) { 'DDC/CI OK' } else { 'no DDC/CI' }
-        Write-Host ("[{0}] {1}  ({2})" -f $m.Index, $m.Name, $ddc)
+    for ($i = 0; $i -lt $monitors.Handles.Count; $i++) {
+        $ddc = if ($monitors.Ok[$i]) { 'DDC/CI OK' } else { 'no DDC/CI' }
+        Write-Host ("[{0}] {1}  ({2})" -f ($i + 1), $monitors.Names[$i], $ddc)
     }
-    exit 0
-}
-
-# ---- action: get (default) ----
-if ($Action -eq '' -or $Action -eq 'get') {
-    foreach ($m in $monitors) {
-        if ($Monitor -ge 0 -and $m.Index -ne $Monitor) { continue }
-        if ($m.Supported) {
-            Write-Host ("[{0}] {1}: {2} ({3}/{4})" -f $m.Index, $m.Name,
-                (Show-Pct $m.Current $m.Min $m.Max), $m.Current, $m.Max)
-        }
-        else {
-            Write-Host ("[{0}] {1}: not supported (enable DDC/CI in the monitor OSD menu)" -f $m.Index, $m.Name) -ForegroundColor Yellow
-        }
-    }
+    Release-DDCMonitors $monitors
     exit 0
 }
 
 # ---- action: dim / undim (software dimming, works with HDR on) ----
 if ($Action -eq 'dim' -or $Action -eq 'undim') {
-    if ($Action -eq 'undim') {
-        $factor = 1.0
-    }
+    if ($Action -eq 'undim') { $factor = 1.0 }
     else {
         if ($Value -lt 1 -or $Value -gt 100) { $Value = 50 }
-        # gamma ramp is clamped by the graphics driver for safety; anything
-        # below ~50% gets rejected (tested), so keep the floor at 50%
-        $factor = [math]::Max(0.5, [math]::Min(1.0, $Value / 100.0))
+        $factor = $Value / 100.0
     }
-    $ok = [DDCBrightness.MonitorApi]::ApplyGammaFactor($factor)
+    $ok = Set-GammaFactor $factor
     if ($ok) {
         Write-Host ("Software dimming applied: {0}%" -f [math]::Round($factor * 100)) -ForegroundColor Green
     }
     else {
         Write-Host 'Failed to apply gamma ramp (driver refused).' -ForegroundColor Red
     }
+    Release-DDCMonitors $monitors
+    exit 0
+}
+
+# ---- action: get (default) ----
+if ($Action -eq '' -or $Action -eq 'get') {
+    for ($i = 0; $i -lt $monitors.Handles.Count; $i++) {
+        if ($Monitor -ge 0 -and ($i + 1) -ne $Monitor) { continue }
+        if ($monitors.Ok[$i]) {
+            $pct = ConvertTo-Pct $monitors.Cur[$i] $monitors.Min[$i] $monitors.Max[$i]
+            Write-Host ("[{0}] {1}: {2}% ({3}/{4})" -f ($i + 1), $monitors.Names[$i], $pct, $monitors.Cur[$i], $monitors.Max[$i])
+        }
+        else {
+            Write-Host ("[{0}] {1}: not supported (enable DDC/CI in the monitor OSD menu)" -f ($i + 1), $monitors.Names[$i]) -ForegroundColor Yellow
+        }
+    }
+    Release-DDCMonitors $monitors
     exit 0
 }
 
 # ---- actions that change brightness ----
-foreach ($m in $monitors) {
-    if ($Monitor -ge 0 -and $m.Index -ne $Monitor) { continue }
-    if (-not $m.Supported) {
-        Write-Host ("[{0}] {1}: skipped - DDC/CI not available" -f $m.Index, $m.Name) -ForegroundColor Yellow
+$anyOk = $false
+for ($i = 0; $i -lt $monitors.Handles.Count; $i++) {
+    if ($Monitor -ge 0 -and ($i + 1) -ne $Monitor) { continue }
+    if (-not $monitors.Ok[$i]) {
+        Write-Host ("[{0}] {1}: skipped - DDC/CI not available" -f ($i + 1), $monitors.Names[$i]) -ForegroundColor Yellow
         continue
     }
-    $min = [int]$m.Min; $max = [int]$m.Max
+    $oldPct = ConvertTo-Pct $monitors.Cur[$i] $monitors.Min[$i] $monitors.Max[$i]
     $target = switch ($Action) {
         'set' { $Value }
-        'inc' { [int]$m.Current + $Value }
-        'dec' { [int]$m.Current - $Value }
+        'inc' { [int]$monitors.Cur[$i] + $Value }
+        'dec' { [int]$monitors.Cur[$i] - $Value }
     }
-    $target = [math]::Max($min, [math]::Min($max, $target))
-    $ok = [DDCBrightness.MonitorApi]::SetMonitorBrightness($m.Handle, [uint32]$target)
+    $target = [math]::Max($monitors.Min[$i], [math]::Min($monitors.Max[$i], $target))
+    $ok = [DDCBrightness.MonitorApi]::SetMonitorBrightness($monitors.Handles[$i], [uint32]$target)
     if ($ok) {
-        Write-Host ("[{0}] {1}: {2} -> {3}" -f $m.Index, $m.Name,
-            (Show-Pct $m.Current $m.Min $m.Max), (Show-Pct $target $m.Min $m.Max)) -ForegroundColor Green
+        $anyOk = $true
+        $newPct = ConvertTo-Pct $target $monitors.Min[$i] $monitors.Max[$i]
+        Write-Host ("[{0}] {1}: {2}% -> {3}%" -f ($i + 1), $monitors.Names[$i], $oldPct, $newPct) -ForegroundColor Green
     }
     else {
-        Write-Host ("[{0}] {1}: failed to set brightness (error {2})" -f $m.Index, $m.Name,
+        Write-Host ("[{0}] {1}: failed to set brightness (error {2})" -f ($i + 1), $monitors.Names[$i],
             [Runtime.InteropServices.Marshal]::GetLastWin32Error()) -ForegroundColor Red
     }
 }
-
-# release handles
-$monitors | ForEach-Object { [void][DDCBrightness.MonitorApi]::DestroyPhysicalMonitor($_.Handle) }
+Release-DDCMonitors $monitors
+if (-not $anyOk) { exit 1 }
